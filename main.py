@@ -1,59 +1,83 @@
 import os
 import sys
-import statistics
 
-# Add sibling 'vendor' directory to sys.path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'vendor'))
-
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor"))
 import makefun_bars
 
-closes = []
-entry_close = None
-held = 0
+LOOK = 30
+BUY_RETURN_BPS = -120
+BUY_Z = -1.0
+MIN_CASH = 1_000_000
+SLIPPAGE = 300
+SELL_UP_BPS = 80
+SELL_DOWN_BPS = -200
+HOLD_BARS = 60
+
+_closes = {}
+_symbol = None
+_entry_ref = None
+_entry_seq = None
+_pending_buy = False
+
+
+def _update_closes(batch):
+    for bar in batch.get("bars", []):
+        _closes.setdefault(bar["symbol"], []).append(int(bar["c"]))
+
 
 def on_batch(state, batch):
-    global closes, entry_close, held
+    global _symbol, _entry_ref, _entry_seq, _pending_buy
 
-    # state.symbols is a dict mapping symbol->spec, not a list
-    sym = 'CBBTC' if 'CBBTC' in state.symbols else next(iter(state.symbols))
-    bar = state.latest.get(sym)
-    if bar is None:
+    _update_closes(batch)
+
+    if state.warming_up:
         return []
-    close = float(bar['c'])
-    closes.append(close)
+
+    if _symbol is None:
+        _symbol = next(iter(state.symbols))
 
     orders = []
-    pos = state.positions.get(sym)
 
-    if pos and pos.qty > 0:
-        held += 1
-        g = (close / entry_close - 1) * 10000
-        if g >= 80 or g <= -200 or held >= 60:
-            orders.append({
-                'side': 'sell',
-                'symbol': sym,
-                'qty': pos.qty,
-                'max_slippage_bps': 300
-            })
-            entry_close = None
-            held = 0
-    else:
-        if not state.warming_up and len(closes) > 31:
-            w = closes[-31:]
-            ret = (closes[-1] / w[0] - 1) * 10000
-            mu = statistics.mean(w)
-            sd = statistics.pstdev(w)
-            z = (closes[-1] - mu) / (sd or 1.0)
-            if ret < -120 and z < -1.0 and state.cash >= 1000000:
-                orders.append({
-                    'side': 'buy',
-                    'symbol': sym,
-                    'notional_quote_units': int(state.cash),
-                    'max_slippage_bps': 300
-                })
-                entry_close = close
-                held = 0
+    if _symbol in state.positions:
+        _pending_buy = False
+        held = state.positions[_symbol]
+        price = state.close(_symbol)
+        bars_held = state.seq - _entry_seq
+        if (
+            price >= int(_entry_ref * (1 + SELL_UP_BPS / 10_000))
+            or price <= int(_entry_ref * (1 + SELL_DOWN_BPS / 10_000))
+            or bars_held >= HOLD_BARS
+        ):
+            orders.append(
+                {"side": "sell", "symbol": _symbol, "qty": held.qty, "max_slippage_bps": SLIPPAGE}
+            )
+            _entry_ref = None
+            _entry_seq = None
+    elif not _pending_buy and state.cash >= MIN_CASH:
+        hist = _closes.get(_symbol, [])
+        if len(hist) >= LOOK:
+            window = hist[-LOOK:]
+            c_now = window[-1]
+            c_old = window[0]
+            ret_bps = (c_now - c_old) * 10_000 // c_old if c_old else 0
+            mean = sum(window) / len(window)
+            var = sum((x - mean) ** 2 for x in window) / len(window)
+            std = var ** 0.5
+            z = (c_now - mean) / std if std > 0 else 0.0
+            if ret_bps < BUY_RETURN_BPS and z < BUY_Z:
+                orders.append(
+                    {
+                        "side": "buy",
+                        "symbol": _symbol,
+                        "notional_quote_units": int(state.cash),
+                        "max_slippage_bps": SLIPPAGE,
+                    }
+                )
+                _entry_ref = state.close(_symbol)
+                _entry_seq = state.seq
+                _pending_buy = True
 
     return orders
+
 
 makefun_bars.run(on_batch)

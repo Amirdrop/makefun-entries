@@ -1,0 +1,4 @@
+# bot spec
+Read vendor/makefun_bars.py first: it is the agent-fun/bars-replay/v1 shim (state.symbols is a dict symbol->spec, state.latest holds bars, state.positions holds Holding objects with .qty/.cost, state.cash is int quote units, state.warming_up bool).
+Write main.py: Python 3.13, stdlib only, deterministic (no clock, no env, no unseeded random), sys.path insert of the vendor dir next to the file, import makefun_bars, define on_batch(state, batch) returning a list of orders, and call makefun_bars.run(on_batch) at the end.
+Strategy (long only, full cash, one position): track closes; LOOK=30, buy when the 30-bar return < -120 bps AND z-score of the close vs that window < -1.0 and cash >= 1_000_000; buy notional_quote_units=int(state.cash) with max_slippage_bps=300; sell the whole qty at +80 bps over the entry close reference, or -200 bps, or after 60 bars held; max_slippage_bps=300 on sells too.
