@@ -11,7 +11,8 @@ MIN_CASH = 1_000_000
 SLIPPAGE = 300
 SELL_UP_BPS = 80
 SELL_DOWN_BPS = -200
-HOLD_BARS = 60
+# Hold up to 75 bars to allow longer recovery time after a drawdown before forced exit.
+HOLD_BARS = 75
 
 _closes = {}
 _symbol = None
